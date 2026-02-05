@@ -1,0 +1,76 @@
+build/
+build_cpu_sherpa/
+build_cuda_sherpa/
+build_x64/
+build_x86/
+build_test/
+build_final/
+out/
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.opus
+*.aac
+*.wma
+*.aiff
+*.aif
+*.aifc
+models/
+history.json
+_codeql_build_dir/
+_codeql_detected_source_root
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+x64/
+x86/
+Debug/
+Release/
+*.vcxproj.filters
+CMakeSettings.json
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
+*.exe
+*.dll
+*.lib
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.bat
+*.ps1
+
+# Runtime generated
+settings.json
+temp_recording.wav
+transcription_history_*
+*.log
+
+# Ninja
+.ninja_deps
+.ninja_log
+
+# CMake User Settings
+CMakeUserPresets.json
