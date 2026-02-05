@@ -21,20 +21,14 @@
 ## Quick Links
 
 - [**Download**](https://github.com/JasonVinion/Whisper-Studio/releases/latest)
+- [**About**](#about)
+- [**Features**](#features)
 - [**Issues**](https://github.com/JasonVinion/Whisper-Studio/issues)
 - [**Feature Requests**](https://github.com/JasonVinion/Whisper-Studio/issues/new)
-- [**License**](https://github.com/JasonVinion/Whisper-Studio/blob/main/LICENSE)
-
----
-
-## Table of Contents
-
-- [About](#about)
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Contributing](#contributing)
-- [License](#license)
+- [**Installation**](#installation)
+- [**Usage**](#usage)
+- [**Contributing**](#contributing)
+- [**License**](#license)
 
 
 ## About
