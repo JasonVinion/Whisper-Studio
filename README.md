@@ -20,10 +20,10 @@
 
 ## Quick Links
 
-- **Download:** https://github.com/JasonVinion/Whisper-Studio/releases/latest  
-- **Issues:** https://github.com/JasonVinion/Whisper-Studio/issues  
-- **Feature Requests:** https://github.com/JasonVinion/Whisper-Studio/issues/new  
-- **License:** https://github.com/JasonVinion/Whisper-Studio/blob/main/LICENSE  
+- [**Download**](https://github.com/JasonVinion/Whisper-Studio/releases/latest)
+- [**Issues**](https://github.com/JasonVinion/Whisper-Studio/issues)
+- [**Feature Requests**](https://github.com/JasonVinion/Whisper-Studio/issues/new)
+- [**License**](https://github.com/JasonVinion/Whisper-Studio/blob/main/LICENSE)
 
 ---
 
