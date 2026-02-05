@@ -1,6 +1,41 @@
-# Whisper Studio
+<h1 align="center">Whisper Studio</h1>
 
-A native Windows desktop application for real-time speech transcription and dictation using OpenAI's Whisper models.
+<p align="center">
+  Native Windows desktop application for real-time speech transcription and dictation using OpenAI Whisper.
+</p>
+
+<p align="center">
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="MIT License">
+  </a>
+  <img src="https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows" alt="Windows">
+  <img src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=c%2B%2B" alt="C++20">
+  <img src="https://img.shields.io/badge/Build-CMake-064F8C?logo=cmake" alt="CMake">
+  <a href="https://github.com/JasonVinion/Whisper-Studio/releases">
+    <img src="https://img.shields.io/github/v/release/JasonVinion/Whisper-Studio" alt="Latest Release">
+  </a>
+</p>
+
+---
+
+## Quick Links
+
+- **Download:** https://github.com/JasonVinion/Whisper-Studio/releases/latest  
+- **Issues:** https://github.com/JasonVinion/Whisper-Studio/issues  
+- **Feature Requests:** https://github.com/JasonVinion/Whisper-Studio/issues/new  
+- **License:** https://github.com/JasonVinion/Whisper-Studio/blob/main/LICENSE  
+
+---
+
+## Table of Contents
+
+- [About](#about)
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Contributing](#contributing)
+- [License](#license)
+
 
 ## About
 
