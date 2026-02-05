@@ -13,7 +13,9 @@
   <img src="https://img.shields.io/badge/Build-CMake-064F8C?logo=cmake" alt="CMake">
   <a href="https://github.com/JasonVinion/Whisper-Studio/releases">
     <img src="https://img.shields.io/github/v/release/JasonVinion/Whisper-Studio" alt="Latest Release">
-  </a>
+  </br>
+  <a href="https://github.com/JasonVinion/Whisper-Studio">
+      <img src="https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/JasonVinion/Whisper-Studio/badge&label=lines%20of%20code" alt="GitHub lines of code"/>
 </p>
 
 ---
