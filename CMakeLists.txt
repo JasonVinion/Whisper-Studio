@@ -194,6 +194,7 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdl2.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdlrenderer2.cpp
+    ${IMGUI_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 
 # Windows executable (WIN32 to hide console)
@@ -239,6 +240,9 @@ target_link_libraries(WhisperGUI PRIVATE
     ws2_32
 )
 
+# imgui_demo.cpp is only compiled for the stubs imgui.cpp links against; the demo itself is unused.
+target_compile_definitions(WhisperGUI PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN IMGUI_DISABLE_DEMO_WINDOWS)
+
 # Add sherpa-onnx if enabled
 if(WHISPERGUI_HAS_SHERPA_ONNX)
     target_include_directories(WhisperGUI PRIVATE ${SHERPA_ONNX_INCLUDE_DIR})
@@ -262,38 +266,16 @@ add_custom_command(TARGET WhisperGUI POST_BUILD
         $<TARGET_FILE_DIR:WhisperGUI>
 )
 
-# Copy all ggml DLLs - ggml-base, ggml-cpu, ggml, and ggml-cuda if available
-if(TARGET ggml-base)
-    add_custom_command(TARGET WhisperGUI POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:ggml-base>
-            $<TARGET_FILE_DIR:WhisperGUI>
-    )
-endif()
-
-if(TARGET ggml-cpu)
-    add_custom_command(TARGET WhisperGUI POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:ggml-cpu>
-            $<TARGET_FILE_DIR:WhisperGUI>
-    )
-endif()
-
-if(TARGET ggml)
-    add_custom_command(TARGET WhisperGUI POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:ggml>
-            $<TARGET_FILE_DIR:WhisperGUI>
-    )
-endif()
-
-if(TARGET ggml-cuda)
-    add_custom_command(TARGET WhisperGUI POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:ggml-cuda>
-            $<TARGET_FILE_DIR:WhisperGUI>
-    )
-endif()
+# Copy the ggml DLLs that exist in this configuration (ggml-cuda only with CUDA)
+foreach(GGML_LIB ggml-base ggml-cpu ggml ggml-cuda)
+    if(TARGET ${GGML_LIB})
+        add_custom_command(TARGET WhisperGUI POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:${GGML_LIB}>
+                $<TARGET_FILE_DIR:WhisperGUI>
+        )
+    endif()
+endforeach()
 
 # Copy SDL2.dll
 add_custom_command(TARGET WhisperGUI POST_BUILD

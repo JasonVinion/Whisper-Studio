@@ -1,71 +1,48 @@
 #pragma once
-
 #include <SDL.h>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
-#include <mutex>
-#include <atomic>
-#include <fstream>
-#include <thread>
-// #include <lame/lame.h>
 
+// Records 16 kHz mono 16-bit PCM from an SDL capture device straight into a WAV file.
 class AudioRecorder {
 public:
-    struct DeviceInfo {
-        std::string name;
-        int index;
-    };
+    struct Stats { float avg = 0, peak = 0; }; // amplitude (0..1) of a finished file
 
     AudioRecorder();
     ~AudioRecorder();
 
-    std::vector<DeviceInfo> getInputDevices();
-    bool startRecording(int deviceIndex, const std::string& outputPath, bool useMp3 = true);
-    void stopRecording();
-    bool isRecording() const { return isRecording_; }
-    float getAmplitude() const { return currentAmplitude_; }
-    
-    // Get peak amplitude from recent samples for silence detection
-    float getRecentPeakAmplitude() const { return recentPeakAmplitude_; }
-    
-    // Check if audio is effectively silent (for noise filtering)
-    static bool isAudioSilent(const std::string& wavPath, float threshold = 0.01f);
-    
-    // Get duration of silence (in seconds) since last sound above threshold
-    float getSilenceDuration(float threshold) const;
-    
-    // Reset recording to new file (for live transcription)
-    bool resetToNewFile(const std::string& newOutputPath);
+    static std::vector<std::string> inputDevices();
+    bool start(const std::string& deviceName, const std::string& path); // empty name = default device
+    Stats stop();
+    // Live mode: finish the current file and keep recording into newPath without a gap.
+    // Returns false if newPath could not be created (recording continues but is not saved).
+    bool rollover(const std::string& newPath, Stats& finished);
+
+    bool isRecording() const { return recording_; }
+    float amplitude() const { return amplitude_; } // mean level of the latest audio block
+    float peak() const { return peak_; }           // peak level of the latest audio block
+    void setSilenceThreshold(float t) { silenceThreshold_ = t; }
+    float silenceSeconds() const; // time since the peak last rose above the silence threshold
 
 private:
-    static void AudioCallback(void* userdata, Uint8* stream, int len);
-    void processAudio(const Uint8* stream, int len);
-    void writeWavHeader(std::ofstream& file, int sampleRate, int bitsPerSample, int channels, int dataSize);
-    void finalizeWavFile();
+    static void callback(void* self, Uint8* data, int len);
+    bool openFile(const std::string& path);
+    Stats closeFile();
 
-    SDL_AudioStream* audioStream_ = nullptr;
-    SDL_AudioDeviceID deviceId_ = 0;
-    std::atomic<bool> isRecording_{false};
-    std::string outputPath_;
-    std::ofstream outputFile_;
+    SDL_AudioDeviceID device_ = 0;
+    SDL_AudioStream* stream_ = nullptr; // converts whatever the device delivers to 16 kHz mono s16
+    std::vector<Uint8> buffer_;
+    // Only touched by the audio thread, or while the device is closed/locked:
+    FILE* file_ = nullptr;
+    uint32_t dataBytes_ = 0;
+    double sum_ = 0;
+    uint64_t samples_ = 0;
+    float filePeak_ = 0;
 
-    std::string tempWavPath_ = "temp_recording.wav";
-    std::ofstream tempWavFile_;
-
-    // Capture settings
-    const int sampleRate_ = 16000;
-    const int channels_ = 1;
-
-    // Stats
-    std::atomic<float> currentAmplitude_{0.0f};
-    std::atomic<float> recentPeakAmplitude_{0.0f};
-    std::chrono::steady_clock::time_point lastSoundTime_;
-
-    std::mutex mutex_;
-    uint32_t totalBytesRecorded_ = 0;
-
-    // MP3
-    // lame_global_flags* lame_ = nullptr;
-    // std::vector<unsigned char> mp3Buffer_;
-    bool isMp3_ = false;
+    std::atomic<bool> recording_{false};
+    std::atomic<float> amplitude_{0}, peak_{0}, silenceThreshold_{0.02f};
+    std::atomic<int64_t> lastSoundMs_{0};
 };

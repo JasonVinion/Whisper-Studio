@@ -44,7 +44,7 @@ Everyone and their dog has built a Whisper wrapper these days. There are countle
 - **Real-Time Dictation** - Live transcription mode which works via automatic silence detection and segmentation.
 - **Speaker Diarization** - Identifies and labels different speakers using neural network–based models powered by the hard work of the [Sherpa-ONNX](https://github.com/k2-fsa/sherpa-onnx) team.
 - **Auto-Paste** - Self-explanatory
-- **Global Hotkeys** - default: F6
+- **Global Hotkeys** - default: F9 (rebind to any of F1-F24)
 - **Built in Editor** - All transcriptions saved locally with inline editing support
 - **Export Transcriptions** - Export to TXT, JSON, or SRT (subtitles)
 - **Multiple Input Sources** - This should be obvious, but I noticed many low quality python wrappers didn't support it. 
@@ -100,7 +100,7 @@ For GPU support, ensure CUDA Toolkit is installed before running CMake.
 
 1. **Select your microphone** from the Audio Device dropdown
 2. **Download a model** - Click the Whisper Model dropdown and select a model to download
-3. **Click Record** or press your hotkey (F6) to start recording
+3. **Click Record** or press your hotkey (F9) to start recording
 4. **Speak naturally** - The waveform will show your audio
 5. **Stop recording** - Click Stop or press the hotkey again
 6. **Wait for transcription** - Results appear in the Transcription panel

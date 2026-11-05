@@ -1,143 +1,69 @@
 #include "InputManager.h"
-#include <iostream>
-#include <chrono>
-#include <thread>
+#include "Util.h"
+#include <SDL.h>
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-
-InputManager::InputManager() {
-}
-
-InputManager::~InputManager() {
-    stopInternalLoop();
-}
-
-void InputManager::setGlobalHotkey(std::function<void()> callback) {
-    hotkeyCallback_ = callback;
-}
-
-void InputManager::setHotkeySym(unsigned long sym) {
-    // Restart loop to apply new grab
-    stopInternalLoop();
-    currentHotkeySym_ = sym;
-    startInternalLoop();
-}
-
-void InputManager::startLearning() {
-    learning_ = true;
-}
-
-void InputManager::startInternalLoop() {
+void InputManager::start(std::function<void()> onEvent) {
     if (running_) return;
+    onEvent_ = std::move(onEvent);
     running_ = true;
-    inputThread_ = std::thread(&InputManager::runLoop, this);
+    thread_ = std::thread(&InputManager::run, this);
 }
 
-void InputManager::stopInternalLoop() {
+void InputManager::stop() {
     running_ = false;
-    if (inputThread_.joinable()) {
-        inputThread_.join();
-    }
+    if (thread_.joinable()) thread_.join();
 }
 
-void InputManager::runLoop() {
-    // Register hotkey (F9 = VK_F9 = 0x78)
-    // Convert XK_ keysym to Windows VK if needed
-    UINT vk = static_cast<UINT>(currentHotkeySym_);
-    
-    // Register the hotkey
-    if (!RegisterHotKey(NULL, 1, 0, vk)) {
-        std::cerr << "InputManager: Failed to register hotkey" << std::endl;
-    }
+void InputManager::setHotkey(unsigned vk) {
+    const bool restart = running_;
+    stop();
+    hotkey_ = vk;
+    if (restart) start(onEvent_);
+}
 
-    MSG msg;
+// RegisterHotKey delivers WM_HOTKEY to the thread that registered it, so registration and the message
+// loop both live here. The key state is polled for push-to-talk.
+void InputManager::run() {
+    unsigned vk = hotkey_;
+    auto reg = [&] {
+        UnregisterHotKey(nullptr, 1);
+        if (!RegisterHotKey(nullptr, 1, MOD_NOREPEAT, vk)) LOG_ERROR("Failed to register hotkey " + std::to_string(vk));
+    };
+    reg();
     while (running_) {
-        if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_HOTKEY) {
-                if (learning_) {
-                    // In learning mode, we'd capture the key
-                    learning_ = false;
-                } else {
-                    if (hotkeyCallback_) {
-                        hotkeyCallback_();
-                    }
-                }
-            }
-        } else {
-            // Check for learning mode - poll keyboard state
-            if (learning_) {
-                for (int vkCode = VK_F1; vkCode <= VK_F24; ++vkCode) {
-                    if (GetAsyncKeyState(vkCode) & 0x8000) {
-                        currentHotkeySym_ = vkCode;
-                        learning_ = false;
-                        // Re-register with new key
-                        UnregisterHotKey(NULL, 1);
-                        RegisterHotKey(NULL, 1, 0, vkCode);
-                        break;
-                    }
-                }
-                // Also check letter keys and number keys
-                for (int vkCode = 'A'; vkCode <= 'Z'; ++vkCode) {
-                    if (GetAsyncKeyState(vkCode) & 0x8000) {
-                        currentHotkeySym_ = vkCode;
-                        learning_ = false;
-                        UnregisterHotKey(NULL, 1);
-                        RegisterHotKey(NULL, 1, 0, vkCode);
-                        break;
-                    }
-                }
-            }
-            
-            // Track if hotkey is currently held (for push-to-talk)
-            hotkeyHeld_ = (GetAsyncKeyState(static_cast<int>(currentHotkeySym_)) & 0x8000) != 0;
-            
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-    }
+        bool wake = false;
+        MSG msg;
+        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE))
+            if (msg.message == WM_HOTKEY && !learning_) pressed_ = wake = true;
 
-    UnregisterHotKey(NULL, 1);
+        if (learning_) {
+            for (unsigned k = VK_F1; k <= VK_F24; ++k) {
+                if (!(GetAsyncKeyState(k) & 0x8000)) continue;
+                while (running_ && (GetAsyncKeyState(k) & 0x8000)) Sleep(10); // wait for release
+                hotkey_ = vk = k;
+                reg();
+                learning_ = false;
+                break;
+            }
+        }
+        const bool held = !learning_ && (GetAsyncKeyState(vk) & 0x8000);
+        if (held != held_) {
+            held_ = held;
+            wake = true;
+        }
+        if (wake && onEvent_) onEvent_();
+        Sleep(10);
+    }
+    UnregisterHotKey(nullptr, 1);
 }
 
-void InputManager::autoPaste(const std::string& text) {
-    // Use Windows clipboard and SendInput to simulate Ctrl+V
-    if (text.empty()) return;
-
-    // Set clipboard text
-    if (!OpenClipboard(NULL)) return;
-    EmptyClipboard();
-
-    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
-    if (hMem) {
-        char* pMem = static_cast<char*>(GlobalLock(hMem));
-        if (pMem) {
-            memcpy(pMem, text.c_str(), text.size() + 1);
-            GlobalUnlock(hMem);
-            SetClipboardData(CF_TEXT, hMem);
-        }
-    }
-    CloseClipboard();
-
-    // Simulate Ctrl+V
-    INPUT inputs[4] = {};
-    
-    // Press Ctrl
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = VK_CONTROL;
-    
-    // Press V
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = 'V';
-    
-    // Release V
-    inputs[2].type = INPUT_KEYBOARD;
-    inputs[2].ki.wVk = 'V';
-    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
-    
-    // Release Ctrl
-    inputs[3].type = INPUT_KEYBOARD;
-    inputs[3].ki.wVk = VK_CONTROL;
-    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
-
-    SendInput(4, inputs, sizeof(INPUT));
+void InputManager::paste(const std::string& text) {
+    // SDL converts UTF-8 to CF_UNICODETEXT and owns the clipboard through its window.
+    if (text.empty() || SDL_SetClipboardText(text.c_str()) != 0) return;
+    INPUT in[4] = {};
+    for (auto& i : in) i.type = INPUT_KEYBOARD;
+    in[0].ki.wVk = in[3].ki.wVk = VK_CONTROL;
+    in[1].ki.wVk = in[2].ki.wVk = 'V';
+    in[2].ki.dwFlags = in[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(4, in, sizeof(INPUT));
 }

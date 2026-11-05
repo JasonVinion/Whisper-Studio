@@ -1,38 +1,33 @@
 #pragma once
-#include <functional>
-#include <thread>
 #include <atomic>
+#include <functional>
 #include <string>
+#include <thread>
 
+// Global hotkey (F1-F24) on a background thread, plus auto-paste.
 class InputManager {
 public:
-    InputManager();
-    ~InputManager();
+    ~InputManager() { stop(); }
 
-    // Sets the global hotkey (currently supports simple keys like F2-F12, or modifiers)
-    // We will use a simple implementation that monitors global input or registers a hotkey.
-    void setGlobalHotkey(std::function<void()> callback);
-    void setHotkeySym(unsigned long sym);
-    unsigned long getHotkeySym() const { return currentHotkeySym_; }
+    // onEvent runs on the input thread whenever the hotkey is pressed or released (use it to wake the UI).
+    void start(std::function<void()> onEvent);
+    void stop();
+    void setHotkey(unsigned vk);
+    unsigned hotkey() const { return hotkey_; }
 
-    // Pastes text into the currently focused window
-    void autoPaste(const std::string& text);
-
-    void startInternalLoop();
-    void stopInternalLoop();
-    void startLearning(); // Captures next key
+    void startLearning() { learning_ = true; } // the next F-key pressed becomes the hotkey
     bool isLearning() const { return learning_; }
-    bool isHotkeyHeld() const { return hotkeyHeld_; }
+    bool isHotkeyHeld() const { return held_; }
+    bool consumePress() { return pressed_.exchange(false); } // true once per hotkey press
+
+    // Puts UTF-8 text on the clipboard and sends Ctrl+V to the focused window. Call from the main thread.
+    static void paste(const std::string& text);
 
 private:
-    std::atomic<bool> running_{false};
-    std::atomic<bool> learning_{false};
-    std::atomic<bool> hotkeyHeld_{false};
-    std::thread inputThread_;
-    std::function<void()> hotkeyCallback_;
+    void run();
 
-    // Windows: F9 default (VK_F9)
-    unsigned long currentHotkeySym_ = 0x78;
-
-    void runLoop();
+    std::thread thread_;
+    std::function<void()> onEvent_;
+    std::atomic<bool> running_{false}, learning_{false}, held_{false}, pressed_{false};
+    std::atomic<unsigned> hotkey_{0x78}; // VK_F9
 };

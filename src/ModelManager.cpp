@@ -1,443 +1,161 @@
 #include "ModelManager.h"
-#include "Logger.h"
-#include <filesystem>
-#include <iostream>
-#include <fstream>
-#include <cstdlib>
-#include <sstream>
-
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#include "Util.h"
 #include <winhttp.h>
-#pragma comment(lib, "winhttp.lib")
+#include <cwchar>
+#include <chrono>
+#include <memory>
 
 namespace fs = std::filesystem;
 
+namespace {
+struct InetCloser {
+    void operator()(HINTERNET h) const { WinHttpCloseHandle(h); }
+};
+using Inet = std::unique_ptr<void, InetCloser>;
+} // namespace
+
 ModelManager::ModelManager() {
-    initModels();
-    initSpeakerModels();
-    
-    // Use absolute paths relative to the executable
-    char buffer[MAX_PATH];
-    GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    fs::path exePath(buffer);
-    fs::path baseDir = exePath.parent_path();
-    
-    modelsDir_ = (baseDir / "models").string();
-    segmentationModelsDir_ = (baseDir / "models" / "segmentation").string();
-    embeddingModelsDir_ = (baseDir / "models" / "embeddings").string();
-    
-    if (!fs::exists(modelsDir_)) fs::create_directories(modelsDir_);
-    if (!fs::exists(segmentationModelsDir_)) fs::create_directories(segmentationModelsDir_);
-    if (!fs::exists(embeddingModelsDir_)) fs::create_directories(embeddingModelsDir_);
-    
-    LOG_INFO("ModelManager initialized with paths:");
-    LOG_INFO("  Models: " + modelsDir_);
-    LOG_INFO("  Segmentation: " + segmentationModelsDir_);
-    LOG_INFO("  Embeddings: " + embeddingModelsDir_);
-}
-
-void ModelManager::initModels() {
-    // Complete list of all available whisper.cpp models from huggingface
-    models_ = {
-        // Tiny models
-        {"Tiny", "ggml-tiny.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"},
-        {"Tiny.en", "ggml-tiny.en.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin"},
-        {"Tiny (q5_1)", "ggml-tiny-q5_1.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q5_1.bin"},
-        {"Tiny.en (q5_1)", "ggml-tiny.en-q5_1.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en-q5_1.bin"},
-        {"Tiny (q8_0)", "ggml-tiny-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny-q8_0.bin"},
-        
-        // Base models
-        {"Base", "ggml-base.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"},
-        {"Base.en", "ggml-base.en.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"},
-        {"Base (q5_1)", "ggml-base-q5_1.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"},
-        {"Base.en (q5_1)", "ggml-base.en-q5_1.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin"},
-        {"Base (q8_0)", "ggml-base-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin"},
-        
-        // Small models
-        {"Small", "ggml-small.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"},
-        {"Small.en", "ggml-small.en.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"},
-        {"Small (q5_1)", "ggml-small-q5_1.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin"},
-        {"Small.en (q5_1)", "ggml-small.en-q5_1.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin"},
-        {"Small (q8_0)", "ggml-small-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q8_0.bin"},
-        
-        // Medium models
-        {"Medium", "ggml-medium.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin"},
-        {"Medium.en", "ggml-medium.en.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en.bin"},
-        {"Medium (q5_0)", "ggml-medium-q5_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q5_0.bin"},
-        {"Medium.en (q5_0)", "ggml-medium.en-q5_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.en-q5_0.bin"},
-        {"Medium (q8_0)", "ggml-medium-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium-q8_0.bin"},
-        
-        // Large models
-        {"Large v1", "ggml-large-v1.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v1.bin"},
-        {"Large v2", "ggml-large-v2.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2.bin"},
-        {"Large v2 (q5_0)", "ggml-large-v2-q5_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2-q5_0.bin"},
-        {"Large v2 (q8_0)", "ggml-large-v2-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v2-q8_0.bin"},
-        {"Large v3", "ggml-large-v3.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"},
-        {"Large v3 (q5_0)", "ggml-large-v3-q5_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-q5_0.bin"},
-        {"Large v3 Turbo", "ggml-large-v3-turbo.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin"},
-        {"Large v3 Turbo (q5_0)", "ggml-large-v3-turbo-q5_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"},
-        {"Large v3 Turbo (q8_0)", "ggml-large-v3-turbo-q8_0.bin", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q8_0.bin"}
+    // Order matters: settings.json stores the selected whisper model by index.
+    const char* whisper[][2] = {
+        {"Tiny", "tiny"}, {"Tiny.en", "tiny.en"}, {"Tiny (q5_1)", "tiny-q5_1"}, {"Tiny.en (q5_1)", "tiny.en-q5_1"},
+        {"Tiny (q8_0)", "tiny-q8_0"}, {"Base", "base"}, {"Base.en", "base.en"}, {"Base (q5_1)", "base-q5_1"},
+        {"Base.en (q5_1)", "base.en-q5_1"}, {"Base (q8_0)", "base-q8_0"}, {"Small", "small"}, {"Small.en", "small.en"},
+        {"Small (q5_1)", "small-q5_1"}, {"Small.en (q5_1)", "small.en-q5_1"}, {"Small (q8_0)", "small-q8_0"},
+        {"Medium", "medium"}, {"Medium.en", "medium.en"}, {"Medium (q5_0)", "medium-q5_0"},
+        {"Medium.en (q5_0)", "medium.en-q5_0"}, {"Medium (q8_0)", "medium-q8_0"}, {"Large v1", "large-v1"},
+        {"Large v2", "large-v2"}, {"Large v2 (q5_0)", "large-v2-q5_0"}, {"Large v2 (q8_0)", "large-v2-q8_0"},
+        {"Large v3", "large-v3"}, {"Large v3 (q5_0)", "large-v3-q5_0"}, {"Large v3 Turbo", "large-v3-turbo"},
+        {"Large v3 Turbo (q5_0)", "large-v3-turbo-q5_0"}, {"Large v3 Turbo (q8_0)", "large-v3-turbo-q8_0"},
     };
-}
-
-std::vector<ModelManager::ModelInfo> ModelManager::getAvailableModels() {
-    return models_;
-}
-
-bool ModelManager::isModelAvailable(const std::string& modelName) {
-    std::string path = getModelPath(modelName);
-    return fs::exists(path);
-}
-
-std::string ModelManager::getModelPath(const std::string& modelName) {
-    for (const auto& model : models_) {
-        if (model.name == modelName) {
-            return (fs::path(modelsDir_) / model.filename).string();
-        }
-    }
-    return "";
-}
-
-bool ModelManager::downloadModel(const std::string& modelName) {
-    std::string url;
-    std::string filename;
-    for (const auto& model : models_) {
-        if (model.name == modelName) {
-            url = model.url;
-            filename = model.filename;
-            break;
-        }
+    for (auto& w : whisper) {
+        std::string file = std::string("ggml-") + w[1] + ".bin";
+        whisper_.push_back({w[0], file, "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + file});
     }
 
-    if (url.empty()) return false;
-
-    std::string outputPath = (fs::path(modelsDir_) / filename).string();
-    
-    downloadProgress_.currentModel = modelName;
-    downloadProgress_.startTime = std::chrono::steady_clock::now();
-    downloadProgress_.isDownloading = true;
-    
-    bool success = downloadFile(url, outputPath);
-    
-    downloadProgress_.isDownloading = false;
-    return success && fs::exists(outputPath);
-}
-
-void ModelManager::initSpeakerModels() {
-    // Speaker diarization models from sherpa-onnx
-    // Separated into Segmentation and Embedding categories
-    speakerModels_ = {
-        // Segmentation models (Pyannote-based)
-        {"Pyannote Segmentation 3.0", "sherpa-onnx-pyannote-segmentation-3-0",
-         "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
-         SpeakerModelType::Segmentation, true, "model.onnx"},
-        
-        // Speaker embedding models
-        {"3D-Speaker (ERes2Net Base)", "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
-         "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
-         SpeakerModelType::Embedding, false, ""},
-        {"WeSpeaker ResNet34 (VoxCeleb)", "wespeaker_en_voxceleb_resnet34.onnx",
-         "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx",
-         SpeakerModelType::Embedding, false, ""},
-        {"WeSpeaker ResNet34 (CnCeleb)", "wespeaker_zh_cnceleb_resnet34.onnx",
-         "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_zh_cnceleb_resnet34.onnx",
-         SpeakerModelType::Embedding, false, ""},
+    const std::string sherpa = "https://github.com/k2-fsa/sherpa-onnx/releases/download/";
+    speaker_.push_back({"Pyannote Segmentation 3.0", "sherpa-onnx-pyannote-segmentation-3-0",
+                        sherpa + "speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+                        Kind::Segmentation, "model.onnx"});
+    const char* embeddings[][2] = {
+        {"3D-Speaker (ERes2Net Base)", "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"},
+        {"WeSpeaker ResNet34 (VoxCeleb)", "wespeaker_en_voxceleb_resnet34.onnx"},
+        {"WeSpeaker ResNet34 (CnCeleb)", "wespeaker_zh_cnceleb_resnet34.onnx"},
     };
+    for (auto& e : embeddings) // "recongition" is the real (misspelled) sherpa-onnx release tag
+        speaker_.push_back({e[0], e[1], sherpa + "speaker-recongition-models/" + e[1], Kind::Embedding});
+
+    const fs::path root = fs::absolute("models");
+    const fs::path dirs[] = {root, root / "segmentation", root / "embeddings"};
+    for (int i = 0; i < 3; ++i) {
+        std::error_code ec;
+        fs::create_directories(dirs[i], ec);
+        dirs_[i] = dirs[i].string();
+    }
+    LOG_INFO("Models directory: " + dirs_[0]);
 }
 
-std::vector<ModelManager::SpeakerModelInfo> ModelManager::getAllSpeakerModels() {
-    return speakerModels_;
+const ModelManager::Model* ModelManager::findSpeakerModel(const std::string& name) const {
+    for (const auto& m : speaker_)
+        if (m.name == name) return &m;
+    return nullptr;
 }
 
-std::vector<ModelManager::SpeakerModelInfo> ModelManager::getSegmentationModels() {
-    std::vector<SpeakerModelInfo> result;
-    for (const auto& model : speakerModels_) {
-        if (model.type == SpeakerModelType::Segmentation) {
-            result.push_back(model);
-        }
-    }
-    return result;
+std::string ModelManager::path(const Model& m) const {
+    fs::path p = fs::path(dirs_[static_cast<int>(m.kind)]) / m.file;
+    if (!m.archiveEntry.empty()) p /= m.archiveEntry;
+    return p.string();
 }
 
-std::vector<ModelManager::SpeakerModelInfo> ModelManager::getEmbeddingModels() {
-    std::vector<SpeakerModelInfo> result;
-    for (const auto& model : speakerModels_) {
-        if (model.type == SpeakerModelType::Embedding) {
-            result.push_back(model);
-        }
-    }
-    return result;
+bool ModelManager::isAvailable(const Model& m) const {
+    std::error_code ec;
+    return fs::exists(path(m), ec);
 }
 
-bool ModelManager::isSpeakerModelAvailable(const std::string& modelName) {
-    std::string path = getActualModelFilePath(modelName);
-    if (path.empty()) {
-        LOG_DEBUG("isSpeakerModelAvailable: path is empty for " + modelName);
-        return false;
-    }
-    
-    bool exists = fs::exists(path);
-    if (!exists) {
-        LOG_DEBUG("isSpeakerModelAvailable: path not found: " + path);
-    }
-    return exists;
+bool ModelManager::download(const Model& m) {
+    LOG_INFO("Downloading model: " + m.name);
+    if (m.archiveEntry.empty()) return downloadFile(m.url, path(m));
+
+    const std::string dir = dirs_[static_cast<int>(m.kind)];
+    const std::string archive = (fs::path(dir) / (m.file + ".tar.bz2")).string();
+    bool ok = downloadFile(m.url, archive) && runHidden("tar -xjf \"" + archive + "\" -C \"" + dir + "\"") == 0 &&
+              isAvailable(m);
+    std::error_code ec;
+    fs::remove(archive, ec);
+    if (!ok) LOG_ERROR("Failed to extract " + archive);
+    return ok;
 }
 
-std::string ModelManager::getSpeakerModelPath(const std::string& modelName) {
-    for (const auto& model : speakerModels_) {
-        if (model.name == modelName) {
-            std::string baseDir = (model.type == SpeakerModelType::Segmentation) ? 
-                                  segmentationModelsDir_ : embeddingModelsDir_;
-            return (fs::path(baseDir) / model.filename).string();
-        }
-    }
-    return "";
-}
+// Downloads to "<out>.part" and renames it only once the whole file has arrived, so an interrupted or
+// failed download is never mistaken for a usable model.
+bool ModelManager::downloadFile(const std::string& url, const std::string& out) {
+    progress_.done = progress_.total = progress_.speed = 0;
+    std::wstring wurl(url.begin(), url.end());
+    wchar_t host[256], urlPath[2048];
+    URL_COMPONENTS uc{};
+    uc.dwStructSize = sizeof uc;
+    uc.lpszHostName = host;
+    uc.dwHostNameLength = 256;
+    uc.lpszUrlPath = urlPath;
+    uc.dwUrlPathLength = 2048;
+    if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc)) return false;
 
-std::string ModelManager::getActualModelFilePath(const std::string& modelName) {
-    for (const auto& model : speakerModels_) {
-        if (model.name == modelName) {
-            std::string baseDir = (model.type == SpeakerModelType::Segmentation) ? 
-                                  segmentationModelsDir_ : embeddingModelsDir_;
-            if (model.isArchive && !model.modelFile.empty()) {
-                // Return path to the actual model file within the extracted folder
-                return (fs::path(baseDir) / model.filename / model.modelFile).string();
-            } else {
-                // For non-archives, the path is the model file itself
-                return (fs::path(baseDir) / model.filename).string();
-            }
-        }
+    // WinHTTP follows redirects (GitHub / Hugging Face CDNs) by default, except HTTPS -> HTTP.
+    Inet session(WinHttpOpen(L"WhisperStudio/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                             WINHTTP_NO_PROXY_BYPASS, 0));
+    Inet connection(session ? WinHttpConnect(session.get(), host, uc.nPort, 0) : nullptr);
+    Inet request(connection ? WinHttpOpenRequest(connection.get(), L"GET", urlPath, nullptr, WINHTTP_NO_REFERER,
+                                                 WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                 uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                            : nullptr);
+    DWORD status = 0, size = sizeof status;
+    if (!request ||
+        !WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
+        !WinHttpReceiveResponse(request.get(), nullptr) ||
+        !WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                             WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX) ||
+        status != 200) {
+        LOG_ERROR("Download failed: " + url + " (HTTP " + std::to_string(status) + ", error " +
+                  std::to_string(GetLastError()) + ")");
+        return false;
     }
-    return "";
-}
+    wchar_t lengthText[32];
+    size = sizeof lengthText;
+    uint64_t total = 0;
+    if (WinHttpQueryHeaders(request.get(), WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX, lengthText,
+                            &size, WINHTTP_NO_HEADER_INDEX))
+        total = std::wcstoull(lengthText, nullptr, 10); // read as text: models can exceed 4 GB
+    progress_.total = static_cast<double>(total);
 
-bool ModelManager::downloadSpeakerModel(const std::string& modelName) {
-    std::string url;
-    std::string filename;
-    bool isArchive = false;
-    SpeakerModelType type = SpeakerModelType::Segmentation;
-    
-    for (const auto& model : speakerModels_) {
-        if (model.name == modelName) {
-            url = model.url;
-            filename = model.filename;
-            isArchive = model.isArchive;
-            type = model.type;
-            break;
-        }
-    }
-    
-    if (url.empty()) return false;
-    
-    LOG_INFO("Starting download for speaker model: " + modelName);
-    
-    downloadProgress_.currentModel = modelName;
-    downloadProgress_.startTime = std::chrono::steady_clock::now();
-    downloadProgress_.isDownloading = true;
-    
-    std::string baseDir = (type == SpeakerModelType::Segmentation) ? 
-                          segmentationModelsDir_ : embeddingModelsDir_;
-    
-    std::string outputPath;
-    if (isArchive) {
-        outputPath = (fs::path(baseDir) / (filename + ".tar.bz2")).string();
-    } else {
-        outputPath = (fs::path(baseDir) / filename).string();
-    }
-    
-    bool success = downloadFile(url, outputPath);
-    
-    if (success) {
-        if (isArchive) {
-            LOG_INFO("Download complete, extracting " + outputPath);
-            success = extractArchive(outputPath, baseDir);
-            // Clean up archive after extraction
-            try { fs::remove(outputPath); } catch (...) {}
-        }
-        LOG_INFO("Speaker model ready: " + modelName);
-    } else {
-        LOG_ERROR("Failed to download speaker model: " + modelName);
-    }
-    
-    downloadProgress_.isDownloading = false;
-    return success;
-}
-
-bool ModelManager::downloadFile(const std::string& url, const std::string& outputPath) {
-LOG_INFO("Starting download: " + url);
-LOG_INFO("Output path: " + outputPath);
-std::cout << "Downloading: " << url << std::endl;
-std::cout << "To: " << outputPath << std::endl;
-    
-// Parse URL
-std::wstring wUrl(url.begin(), url.end());
-    
-    URL_COMPONENTS urlComp = {0};
-    urlComp.dwStructSize = sizeof(urlComp);
-    wchar_t hostName[256] = {0};
-    wchar_t urlPath[2048] = {0};
-    urlComp.lpszHostName = hostName;
-    urlComp.dwHostNameLength = 256;
-    urlComp.lpszUrlPath = urlPath;
-    urlComp.dwUrlPathLength = 2048;
-    
-    if (!WinHttpCrackUrl(wUrl.c_str(), 0, 0, &urlComp)) {
-        std::cerr << "Failed to parse URL" << std::endl;
-        return false;
-    }
-    
-    // Open session
-    HINTERNET hSession = WinHttpOpen(L"WhisperGUI/1.0",
-                                      WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-                                      WINHTTP_NO_PROXY_NAME,
-                                      WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) {
-        std::cerr << "WinHttpOpen failed" << std::endl;
-        return false;
-    }
-    
-    // Connect
-    HINTERNET hConnect = WinHttpConnect(hSession, hostName, urlComp.nPort, 0);
-    if (!hConnect) {
-        WinHttpCloseHandle(hSession);
-        std::cerr << "WinHttpConnect failed" << std::endl;
-        return false;
-    }
-    
-    // Open request
-    DWORD flags = (urlComp.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", urlPath,
-                                             NULL, WINHTTP_NO_REFERER,
-                                             WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        std::cerr << "WinHttpOpenRequest failed" << std::endl;
-        return false;
-    }
-    
-    // Handle redirects (for GitHub releases)
-    DWORD dwOption = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
-    WinHttpSetOption(hRequest, WINHTTP_OPTION_REDIRECT_POLICY, &dwOption, sizeof(dwOption));
-    
-    // Send request
-    if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        std::cerr << "WinHttpSendRequest failed" << std::endl;
-        return false;
-    }
-    
-    // Receive response
-    if (!WinHttpReceiveResponse(hRequest, NULL)) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        std::cerr << "WinHttpReceiveResponse failed" << std::endl;
-        return false;
-    }
-    
-    // Get content length
-    DWORD dwSize = sizeof(DWORD);
-    DWORD dwContentLength = 0;
-    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-                        NULL, &dwContentLength, &dwSize, NULL);
-    downloadProgress_.totalBytes = static_cast<double>(dwContentLength);
-    downloadProgress_.bytesDownloaded = 0;
-    
-    // Open output file
-    std::ofstream outFile(outputPath, std::ios::binary);
-    if (!outFile) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        std::cerr << "Failed to create output file" << std::endl;
-        return false;
-    }
-    
-    // Download data
-    char buffer[8192];
-    DWORD dwDownloaded = 0;
-    DWORD dwBytesRead = 0;
-    auto lastSpeedCheck = std::chrono::steady_clock::now();
-    double bytesInInterval = 0;
-    
-    do {
-        dwSize = 0;
-        if (!WinHttpQueryDataAvailable(hRequest, &dwSize)) break;
-        if (dwSize == 0) break;
-        
-        DWORD toRead = (dwSize > sizeof(buffer)) ? sizeof(buffer) : dwSize;
-        if (!WinHttpReadData(hRequest, buffer, toRead, &dwBytesRead)) break;
-        
-        outFile.write(buffer, dwBytesRead);
-        dwDownloaded += dwBytesRead;
-        bytesInInterval += dwBytesRead;
-        downloadProgress_.bytesDownloaded = static_cast<double>(dwDownloaded);
-        
-        // Update speed every 500ms
+    const std::string part = out + ".part";
+    std::ofstream file(part, std::ios::binary);
+    std::vector<char> buf(1 << 16);
+    uint64_t received = 0, sinceTick = 0;
+    auto tick = std::chrono::steady_clock::now();
+    DWORD n = 0;
+    while (!cancel_ && file && WinHttpReadData(request.get(), buf.data(), static_cast<DWORD>(buf.size()), &n) && n) {
+        file.write(buf.data(), n);
+        received += n;
+        sinceTick += n;
+        progress_.done = static_cast<double>(received);
         auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastSpeedCheck).count();
-        if (elapsed >= 500) {
-            downloadProgress_.downloadSpeed = bytesInInterval / (elapsed / 1000.0);
-            bytesInInterval = 0;
-            lastSpeedCheck = now;
+        double dt = std::chrono::duration<double>(now - tick).count();
+        if (dt >= 0.5) {
+            progress_.speed = sinceTick / dt;
+            sinceTick = 0;
+            tick = now;
         }
-    } while (dwBytesRead > 0);
-    
-    outFile.close();
-    
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
-    
-    bool success = dwDownloaded > 0;
-    if (success) {
-        LOG_INFO("Download completed: " + std::to_string(dwDownloaded) + " bytes");
-    } else {
-        LOG_ERROR("Download failed: 0 bytes downloaded");
     }
-    return success;
-}
+    file.close();
 
-bool ModelManager::extractArchive(const std::string& archivePath, const std::string& destDir) {
-    LOG_INFO("Extracting archive: " + archivePath);
-    std::cout << "Extracting: " << archivePath << std::endl;
-    
-    // Use tar command (available on Windows 10+) with CREATE_NO_WINDOW
-    std::string command = "tar -xjf \"" + archivePath + "\" -C \"" + destDir + "\"";
-    
-    STARTUPINFOA si = {0};
-    PROCESS_INFORMATION pi = {0};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    
-    std::string cmdLine = "cmd.exe /C " + command;
-    
-    if (!CreateProcessA(NULL, const_cast<char*>(cmdLine.c_str()), NULL, NULL, FALSE,
-                        CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
-        LOG_ERROR("Failed to run tar extraction command");
-        std::cerr << "Failed to run tar extraction" << std::endl;
+    std::error_code ec;
+    const bool complete = !cancel_ && file && n == 0 && received > 0 && (total == 0 || received == total);
+    if (complete) fs::rename(part, out, ec);
+    if (!complete || ec) {
+        fs::remove(part, ec);
+        LOG_ERROR("Download incomplete: " + url + " (" + std::to_string(received) + " of " + std::to_string(total) +
+                  " bytes)");
         return false;
     }
-    
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    
-    DWORD exitCode = 0;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    
-    if (exitCode == 0) {
-        LOG_INFO("Extraction successful");
-    } else {
-        LOG_ERROR("Extraction failed with exit code: " + std::to_string(exitCode));
-    }
-    
-    return exitCode == 0;
+    LOG_INFO("Downloaded " + std::to_string(received) + " bytes to " + out);
+    return true;
 }
