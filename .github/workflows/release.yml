@@ -1,0 +1,123 @@
+# Builds the CPU and CUDA variants on Windows and packages them into WhisperStudio_Setup.exe.
+# Every run uploads the installer as a workflow artifact; pushing a tag like v1.2.0 also publishes
+# it as a GitHub release.
+name: Build installer
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.variant }})
+    runs-on: windows-2022
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, cuda]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install CUDA toolkit
+        if: matrix.variant == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.9.1'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          choco install ninja -y --no-progress | Out-Null
+          # GGML_NATIVE=OFF: target a portable AVX2 baseline instead of the build machine's CPU,
+          # otherwise the binaries can crash on users' PCs.
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF `
+            -DWHISPERGUI_USE_SHERPA_ONNX=ON `
+            -DWHISPERGUI_ENABLE_CUDA=${{ matrix.variant == 'cuda' && 'ON' || 'OFF' }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Stage files
+        shell: pwsh
+        run: |
+          $out = "stage/build_${{ matrix.variant }}_sherpa"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item build/*.exe, build/*.dll $out
+          Copy-Item -Recurse build/resources "$out/resources"
+          Rename-Item "$out/WhisperGUI.exe" WhisperStudio.exe
+          if ("${{ matrix.variant }}" -eq "cuda") {
+            New-Item -ItemType Directory -Force stage/dependencies/cuda | Out-Null
+            Copy-Item "$env:CUDA_PATH/bin/cudart64_*.dll", "$env:CUDA_PATH/bin/cublas64_*.dll", `
+                      "$env:CUDA_PATH/bin/cublasLt64_*.dll" stage/dependencies/cuda
+          }
+          Get-ChildItem -Recurse stage | Select-Object FullName, Length | Format-Table -AutoSize
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: build-${{ matrix.variant }}
+          path: stage
+          retention-days: 3
+
+  installer:
+    name: Package installer
+    needs: build
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          merge-multiple: true
+
+      - name: Download ffmpeg and the VC++ runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dependencies | Out-Null
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip ffmpeg
+          Copy-Item (Get-ChildItem -Recurse ffmpeg -Filter ffmpeg.exe | Select-Object -First 1).FullName dependencies/
+          Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile dependencies/vc_redist.x64.exe
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress | Out-Null
+          $version = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "" }
+          # The script resolves paths relative to itself; copy it next to LICENSE and the build folders.
+          Copy-Item Installer/setup_selector.iss .
+          $defines = if ($version) { @("/DMyAppVersion=$version") } else { @() }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" @defines setup_selector.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item Output/WhisperStudio_Setup.exe
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WhisperStudio_Setup
+          path: Output/WhisperStudio_Setup.exe
+          retention-days: 14
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Whisper Studio ${{ github.ref_name }}
+          files: Output/WhisperStudio_Setup.exe
+          generate_release_notes: true
+          make_latest: true

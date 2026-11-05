@@ -1,311 +1,163 @@
 #include "AudioRecorder.h"
-#include <iostream>
-#include <cmath>
+#include "Util.h"
 #include <algorithm>
+#include <chrono>
+#include <cmath>
+
+namespace {
+constexpr uint32_t kRate = 16000;
+
+int64_t nowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+struct WavHeader { // canonical 44-byte PCM header (all fields naturally aligned, so no padding)
+    char riff[4] = {'R', 'I', 'F', 'F'};
+    uint32_t riffSize;
+    char wave[4] = {'W', 'A', 'V', 'E'}, fmt[4] = {'f', 'm', 't', ' '};
+    uint32_t fmtSize = 16;
+    uint16_t format = 1, channels = 1;
+    uint32_t rate = kRate, byteRate = kRate * 2;
+    uint16_t blockAlign = 2, bits = 16;
+    char data[4] = {'d', 'a', 't', 'a'};
+    uint32_t dataSize;
+};
+static_assert(sizeof(WavHeader) == 44, "WAV header must be 44 bytes");
+
+void writeHeader(FILE* f, uint32_t dataBytes) {
+    WavHeader h;
+    h.riffSize = 36 + dataBytes;
+    h.dataSize = dataBytes;
+    std::fseek(f, 0, SEEK_SET);
+    std::fwrite(&h, sizeof h, 1, f);
+}
+} // namespace
 
 AudioRecorder::AudioRecorder() {
-    if (SDL_Init(SDL_INIT_AUDIO) < 0) {
-        std::cerr << "SDL Audio Init Failed: " << SDL_GetError() << std::endl;
-    }
-    lastSoundTime_ = std::chrono::steady_clock::now();
+    if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) LOG_ERROR(std::string("SDL audio init failed: ") + SDL_GetError());
 }
 
 AudioRecorder::~AudioRecorder() {
-    stopRecording();
+    stop();
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
-std::vector<AudioRecorder::DeviceInfo> AudioRecorder::getInputDevices() {
-    std::vector<DeviceInfo> devices;
-    int count = SDL_GetNumAudioDevices(1); // 1 for input
-    for (int i = 0; i < count; ++i) {
-        devices.push_back({SDL_GetAudioDeviceName(i, 1), i});
+std::vector<std::string> AudioRecorder::inputDevices() {
+    std::vector<std::string> out;
+    for (int i = 0, n = SDL_GetNumAudioDevices(1); i < n; ++i) {
+        const char* name = SDL_GetAudioDeviceName(i, 1);
+        out.emplace_back(name ? name : "Unknown device");
     }
-    return devices;
+    return out;
 }
 
-bool AudioRecorder::startRecording(int deviceIndex, const std::string& outputPath, bool useMp3) {
-    if (isRecording_) return false;
+bool AudioRecorder::start(const std::string& deviceName, const std::string& path) {
+    if (recording_ || !openFile(path)) return false;
 
-    outputPath_ = outputPath;
-    isMp3_ = useMp3;
-    currentAmplitude_ = 0.0f;
-    recentPeakAmplitude_ = 0.0f;
-    lastSoundTime_ = std::chrono::steady_clock::now();
-
-    outputFile_.open(outputPath, std::ios::binary);
-    if (!outputFile_.is_open()) {
-        std::cerr << "Failed to open output file: " << outputPath << std::endl;
-        return false;
-    }
-
-    tempWavFile_.open(tempWavPath_, std::ios::binary);
-    if (!tempWavFile_.is_open()) {
-         std::cerr << "Failed to open temp wav file" << std::endl;
-         outputFile_.close();
-         return false;
-    }
-    writeWavHeader(tempWavFile_, sampleRate_, 16, channels_, 0);
-
-    if (isMp3_) {
-        // MP3 disabled
-        std::cerr << "MP3 support disabled in this build." << std::endl;
-        isMp3_ = false; // Fallback to WAV
-        writeWavHeader(outputFile_, sampleRate_, 16, channels_, 0);
-    } else {
-        // Write placeholder WAV header for output file
-        writeWavHeader(outputFile_, sampleRate_, 16, channels_, 0);
-    }
-
-    SDL_AudioSpec want, have;
-    SDL_zero(want);
-    want.freq = sampleRate_;
+    SDL_AudioSpec want{}, have{};
+    want.freq = kRate;
     want.format = AUDIO_S16SYS;
-    want.channels = channels_;
+    want.channels = 1;
     want.samples = 1024;
-    want.callback = AudioCallback;
+    want.callback = callback;
     want.userdata = this;
-
-    const char* deviceName = nullptr;
-    if (deviceIndex >= 0 && deviceIndex < SDL_GetNumAudioDevices(1)) {
-        deviceName = SDL_GetAudioDeviceName(deviceIndex, 1);
+    const char* name = deviceName.empty() ? nullptr : deviceName.c_str();
+    device_ = SDL_OpenAudioDevice(name, 1, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
+    if (!device_ && name) {
+        LOG_WARNING("Could not open '" + deviceName + "', falling back to the default microphone");
+        device_ = SDL_OpenAudioDevice(nullptr, 1, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
     }
-
-    deviceId_ = SDL_OpenAudioDevice(deviceName, 1, &want, &have, SDL_AUDIO_ALLOW_ANY_CHANGE);
-    if (deviceId_ == 0) {
-        std::cerr << "Failed to open audio device: " << SDL_GetError() << std::endl;
-        outputFile_.close();
-        tempWavFile_.close();
+    if (device_) stream_ = SDL_NewAudioStream(have.format, have.channels, have.freq, AUDIO_S16SYS, 1, kRate);
+    if (!stream_) {
+        LOG_ERROR(std::string("Failed to open audio device: ") + SDL_GetError());
+        if (device_) SDL_CloseAudioDevice(device_);
+        device_ = 0;
+        closeFile();
+        std::remove(path.c_str());
         return false;
     }
-
-    audioStream_ = SDL_NewAudioStream(have.format, have.channels, have.freq,
-                                      AUDIO_S16SYS, channels_, sampleRate_);
-
-    if (!audioStream_) {
-        std::cerr << "Failed to create audio stream: " << SDL_GetError() << std::endl;
-        SDL_CloseAudioDevice(deviceId_);
-        outputFile_.close();
-        tempWavFile_.close();
-        return false;
-    }
-
-    totalBytesRecorded_ = 0;
-    isRecording_ = true;
-    SDL_PauseAudioDevice(deviceId_, 0);
+    buffer_.resize(8192);
+    lastSoundMs_ = nowMs();
+    recording_ = true;
+    SDL_PauseAudioDevice(device_, 0);
     return true;
 }
 
-void AudioRecorder::stopRecording() {
-    if (!isRecording_) return;
-
-    if (deviceId_ != 0) {
-        SDL_LockAudioDevice(deviceId_);
-    }
-    isRecording_ = false;
-    if (deviceId_ != 0) {
-        SDL_UnlockAudioDevice(deviceId_);
-    }
-    SDL_CloseAudioDevice(deviceId_);
-    deviceId_ = 0;
-
-    if (audioStream_) {
-        SDL_FreeAudioStream(audioStream_);
-        audioStream_ = nullptr;
-    }
-
-    // Finalize temp wav
-    finalizeWavFile(); // Refactored below to handle tempWavFile_
-    tempWavFile_.close();
-
-    if (false /*isMp3_ && lame_*/) {
-        // ...
-    } else {
-        // Finalize output wav
-        if (outputFile_.is_open()) {
-            outputFile_.seekp(0, std::ios::beg);
-            writeWavHeader(outputFile_, sampleRate_, 16, channels_, totalBytesRecorded_);
-        }
-    }
-
-    outputFile_.close();
-    currentAmplitude_ = 0.0f;
+AudioRecorder::Stats AudioRecorder::stop() {
+    if (!recording_) return {};
+    recording_ = false;
+    SDL_CloseAudioDevice(device_); // waits for a running callback to return
+    device_ = 0;
+    SDL_FreeAudioStream(stream_);
+    stream_ = nullptr;
+    amplitude_ = peak_ = 0;
+    return closeFile();
 }
 
-void AudioRecorder::AudioCallback(void* userdata, Uint8* stream, int len) {
-    auto* recorder = static_cast<AudioRecorder*>(userdata);
-
-    if (recorder->audioStream_) {
-        if (SDL_AudioStreamPut(recorder->audioStream_, stream, len) == 0) {
-            int available = SDL_AudioStreamAvailable(recorder->audioStream_);
-            if (available > 0) {
-                std::vector<Uint8> buffer(available);
-                int bytesRead = SDL_AudioStreamGet(recorder->audioStream_, buffer.data(), available);
-                if (bytesRead > 0) {
-                    recorder->processAudio(buffer.data(), bytesRead);
-                }
-            }
-        }
-    }
+bool AudioRecorder::rollover(const std::string& newPath, Stats& finished) {
+    SDL_LockAudioDevice(device_);
+    finished = closeFile();
+    bool ok = openFile(newPath);
+    SDL_UnlockAudioDevice(device_);
+    return ok;
 }
 
-void AudioRecorder::processAudio(const Uint8* stream, int len) {
-    if (!isRecording_) return;
-
-    // Write to temp WAV
-    tempWavFile_.write(reinterpret_cast<const char*>(stream), len);
-
-    // int nsamples = len / 2;
-
-    if (false /*isMp3_*/) {
-        // ...
-    } else {
-        outputFile_.write(reinterpret_cast<const char*>(stream), len);
-    }
-
-    totalBytesRecorded_ += len;
-
-    const int16_t* samples = reinterpret_cast<const int16_t*>(stream);
-    int sampleCount = len / 2;
-    float sum = 0;
-    float peak = 0;
-    for (int i = 0; i < sampleCount; ++i) {
-        float sample = std::abs(samples[i]) / 32768.0f;
-        sum += sample;
-        peak = std::max(peak, sample);
-    }
-    if (sampleCount > 0) {
-        currentAmplitude_ = sum / sampleCount;
-        recentPeakAmplitude_ = peak;
-        
-        // Update last sound time if amplitude is above a minimum threshold
-        if (peak > 0.01f) {
-            lastSoundTime_ = std::chrono::steady_clock::now();
-        }
-    }
+float AudioRecorder::silenceSeconds() const {
+    return (nowMs() - lastSoundMs_) / 1000.0f;
 }
 
-void AudioRecorder::writeWavHeader(std::ofstream& file, int sampleRate, int bitsPerSample, int channels, int dataSize) {
-    file << "RIFF";
-    uint32_t fileSize = 36 + dataSize;
-    file.write(reinterpret_cast<const char*>(&fileSize), 4);
-    file << "WAVE";
-    file << "fmt ";
-    uint32_t fmtSize = 16;
-    file.write(reinterpret_cast<const char*>(&fmtSize), 4);
-    uint16_t audioFormat = 1; // PCM
-    file.write(reinterpret_cast<const char*>(&audioFormat), 2);
-    uint16_t numChannels = channels;
-    file.write(reinterpret_cast<const char*>(&numChannels), 2);
-    uint32_t sampleRate32 = sampleRate;
-    file.write(reinterpret_cast<const char*>(&sampleRate32), 4);
-    uint32_t byteRate = sampleRate * channels * bitsPerSample / 8;
-    file.write(reinterpret_cast<const char*>(&byteRate), 4);
-    uint16_t blockAlign = channels * bitsPerSample / 8;
-    file.write(reinterpret_cast<const char*>(&blockAlign), 2);
-    uint16_t bitsPerSample16 = bitsPerSample;
-    file.write(reinterpret_cast<const char*>(&bitsPerSample16), 2);
-    file << "data";
-    uint32_t dataSize32 = dataSize;
-    file.write(reinterpret_cast<const char*>(&dataSize32), 4);
-}
-
-void AudioRecorder::finalizeWavFile() {
-    // Only for temp file, logic reused
-    if (tempWavFile_.is_open()) {
-        tempWavFile_.seekp(0, std::ios::beg);
-        writeWavHeader(tempWavFile_, sampleRate_, 16, channels_, totalBytesRecorded_);
-    }
-}
-
-float AudioRecorder::getSilenceDuration(float threshold) const {
-    if (recentPeakAmplitude_ > threshold) {
-        return 0.0f;
-    }
-    auto now = std::chrono::steady_clock::now();
-    return std::chrono::duration<float>(now - lastSoundTime_).count();
-}
-
-bool AudioRecorder::isAudioSilent(const std::string& wavPath, float threshold) {
-    std::ifstream file(wavPath, std::ios::binary);
-    if (!file.is_open()) return true;
-    
-    // Skip WAV header
-    file.seekg(44, std::ios::beg);
-    
-    // Read samples and check amplitude
-    std::vector<int16_t> buffer(4096);
-    float maxAmplitude = 0.0f;
-    int totalSamples = 0;
-    float totalAmplitude = 0.0f;
-    
-    while (file.read(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(int16_t))) {
-        size_t samplesRead = file.gcount() / sizeof(int16_t);
-        for (size_t i = 0; i < samplesRead; ++i) {
-            float amplitude = std::abs(buffer[i]) / 32768.0f;
-            maxAmplitude = std::max(maxAmplitude, amplitude);
-            totalAmplitude += amplitude;
-            totalSamples++;
-        }
-    }
-    
-    // Also check remaining bytes
-    size_t remaining = file.gcount() / sizeof(int16_t);
-    for (size_t i = 0; i < remaining; ++i) {
-        float amplitude = std::abs(buffer[i]) / 32768.0f;
-        maxAmplitude = std::max(maxAmplitude, amplitude);
-        totalAmplitude += amplitude;
-        totalSamples++;
-    }
-    
-    if (totalSamples == 0) return true;
-    
-    float avgAmplitude = totalAmplitude / totalSamples;
-    // Consider silent if both average and peak are below threshold
-    return (avgAmplitude < threshold && maxAmplitude < threshold * 3.0f);
-}
-
-bool AudioRecorder::resetToNewFile(const std::string& newOutputPath) {
-    if (!isRecording_) return false;
-
-    const bool shouldLockDevice = deviceId_ != 0;
-    if (shouldLockDevice) {
-        SDL_LockAudioDevice(deviceId_);
-    }
-    std::lock_guard<std::mutex> lock(mutex_);
-    
-    // Finalize current output file
-    if (outputFile_.is_open()) {
-        outputFile_.seekp(0, std::ios::beg);
-        writeWavHeader(outputFile_, sampleRate_, 16, channels_, totalBytesRecorded_);
-        outputFile_.close();
-    }
-    
-    // Store the old path for transcription
-    std::string oldPath = outputPath_;
-    
-    // Reset counters
-    totalBytesRecorded_ = 0;
-    outputPath_ = newOutputPath;
-    currentAmplitude_ = 0.0f;
-    recentPeakAmplitude_ = 0.0f;
-    lastSoundTime_ = std::chrono::steady_clock::now();
-    
-    // Open new output file
-    outputFile_.open(outputPath_, std::ios::binary);
-    if (!outputFile_.is_open()) {
-        std::cerr << "Failed to open new output file: " << outputPath_ << std::endl;
-        if (shouldLockDevice) {
-            SDL_UnlockAudioDevice(deviceId_);
-        }
+bool AudioRecorder::openFile(const std::string& path) {
+    file_ = std::fopen(path.c_str(), "wb");
+    if (!file_) {
+        LOG_ERROR("Failed to create " + path);
         return false;
     }
-    
-    // Write placeholder WAV header
-    writeWavHeader(outputFile_, sampleRate_, 16, channels_, 0);
-    
-    if (shouldLockDevice) {
-        SDL_UnlockAudioDevice(deviceId_);
-    }
+    std::setvbuf(file_, nullptr, _IOFBF, 1 << 16);
+    writeHeader(file_, 0); // placeholder, rewritten with the real size on close
     return true;
+}
+
+AudioRecorder::Stats AudioRecorder::closeFile() {
+    Stats s{samples_ ? static_cast<float>(sum_ / samples_) : 0.0f, filePeak_};
+    if (file_) {
+        writeHeader(file_, dataBytes_);
+        std::fclose(file_);
+        file_ = nullptr;
+    }
+    dataBytes_ = 0;
+    sum_ = 0;
+    samples_ = 0;
+    filePeak_ = 0;
+    return s;
+}
+
+void AudioRecorder::callback(void* self, Uint8* data, int len) {
+    auto& r = *static_cast<AudioRecorder*>(self);
+    if (!r.recording_ || SDL_AudioStreamPut(r.stream_, data, len) != 0) return;
+    int n = SDL_AudioStreamAvailable(r.stream_);
+    if (n <= 0) return;
+    if (static_cast<size_t>(n) > r.buffer_.size()) r.buffer_.resize(n); // rare; normally reused
+    n = SDL_AudioStreamGet(r.stream_, r.buffer_.data(), n);
+    if (n <= 0) return;
+
+    if (r.file_) {
+        std::fwrite(r.buffer_.data(), 1, n, r.file_);
+        r.dataBytes_ += n;
+    }
+    const auto* s = reinterpret_cast<const int16_t*>(r.buffer_.data());
+    const int count = n / 2;
+    float sum = 0, peak = 0;
+    for (int i = 0; i < count; ++i) {
+        float a = std::abs(s[i]) / 32768.0f;
+        sum += a;
+        peak = std::max(peak, a);
+    }
+    if (count == 0) return;
+    r.sum_ += sum;
+    r.samples_ += count;
+    r.filePeak_ = std::max(r.filePeak_, peak);
+    r.amplitude_ = sum / count;
+    r.peak_ = peak;
+    if (peak > r.silenceThreshold_) r.lastSoundMs_ = nowMs();
 }
